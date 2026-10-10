@@ -1,0 +1,154 @@
+import app from 'flarum/common/app';
+import type Mithril from 'mithril';
+
+import { naiveToUTC, breakDown, twoDigits, TimeParts } from '../utils/time';
+
+// fof/forum-widgets-core doesn't export a usable type for its Widget base, so
+// accept any constructor (resolved from the registry at call time).
+type WidgetCtor = new (...args: any[]) => any;
+
+/**
+ * Builds the Countdown widget class.
+ *
+ * The fof Widget base class is passed in (resolved at initializer time, not at
+ * module load) so the class isn't defined against an `ext:` binding that may
+ * not be registered yet during cross-bundle load.
+ */
+export default function makeCountdownWidget(Widget: WidgetCtor) {
+  return class CountdownWidget extends Widget {
+    private _tick: ReturnType<typeof setInterval> | null = null;
+    private _target: number | null = null;
+
+    // Forum attributes are absent in the admin frontend, where the widget is
+    // rendered as a preview by the layout editor — fall back gracefully.
+    attr(key: string): string {
+      return (app.forum && (app.forum.attribute(key) as string)) || '';
+    }
+
+    oninit(vnode: Mithril.Vnode) {
+      super.oninit(vnode);
+      this._computeTarget();
+      this._startTicking();
+    }
+
+    onremove(vnode: Mithril.VnodeDOM) {
+      this._stopTicking();
+      // The base class resolves dynamically from fof/forum-widgets-core, so
+      // always give it (and Flarum's Component above it) the chance to run
+      // its own teardown — today that's a no-op stub, but this subclass
+      // shouldn't be the reason a future base-class cleanup never runs.
+      super.onremove?.(vnode);
+    }
+
+    _computeTarget() {
+      const raw = this.attr('linkrobinsCountdownTarget');
+      const tz = this.attr('linkrobinsCountdownTimezone') || 'UTC';
+      this._target = naiveToUTC(raw, tz);
+    }
+
+    _startTicking() {
+      // No target (or already elapsed) means nothing changes per second — do
+      // not burn a redraw loop.
+      if (this._tick || this._target === null || this._target - Date.now() <= 0) return;
+
+      this._tick = setInterval(() => {
+        if (this._target !== null && this._target - Date.now() <= 0) {
+          this._stopTicking();
+        }
+        m.redraw();
+      }, 1000);
+    }
+
+    _stopTicking() {
+      if (this._tick) {
+        clearInterval(this._tick);
+        this._tick = null;
+      }
+    }
+
+    className(): string {
+      return 'LinkRobinsCountdownWidget';
+    }
+
+    icon(): string {
+      return this.attr('linkrobinsCountdownIcon');
+    }
+
+    title(): string {
+      return this.attr('linkrobinsCountdownTitle');
+    }
+
+    description(): string {
+      return this.attr('linkrobinsCountdownDescription');
+    }
+
+    // The base header() renders icon, title and description together, but only
+    // when title() is set. Keep it as the primary path so that markup stays
+    // fof's own, and hand-build the no-title case so an icon and/or a
+    // description still get a header instead of rendering nothing at all.
+    header() {
+      const base = super.header();
+      if (base) return base;
+
+      const iconName = this.icon();
+      const description = this.description();
+      if (!iconName && !description) return null;
+
+      return m(
+        'div',
+        { className: 'FofWidgets-Widget-title' },
+        iconName ? m('span', { className: 'FofWidgets-Widget-title-icon' }, m('i', { className: iconName })) : null,
+        description ? m('div', { className: 'FofWidgets-Widget-title-desc' }, description) : null
+      );
+    }
+
+    content() {
+      if (this._target === null) {
+        return m('div', { className: 'LinkRobinsCountdown-empty' }, app.translator.trans('linkrobins-countdown-widget.forum.not_configured'));
+      }
+
+      const remaining = this._target - Date.now();
+      const linkUrl = this.attr('linkrobinsCountdownLinkUrl');
+
+      if (remaining <= 0) {
+        return this._renderDone(this.attr('linkrobinsCountdownDoneMessage'), linkUrl);
+      }
+
+      return this._renderBoxes(remaining, linkUrl);
+    }
+
+    _renderDone(doneMessage: string, linkUrl: string) {
+      const msg = doneMessage && doneMessage.length ? doneMessage : '🎉';
+      const inner = m('div', { className: 'LinkRobinsCountdown-done' }, msg);
+
+      if (linkUrl) {
+        return m('a', { className: 'LinkRobinsCountdown-doneLink', href: linkUrl, rel: 'noopener' }, inner);
+      }
+      return inner;
+    }
+
+    _renderBoxes(remaining: number, linkUrl: string) {
+      const parts: TimeParts = breakDown(remaining);
+      const boxes = m('div', { className: 'LinkRobinsCountdown-boxes' }, [
+        this._box(parts.days, app.translator.trans('linkrobins-countdown-widget.forum.unit.days')),
+        this._box(parts.hours, app.translator.trans('linkrobins-countdown-widget.forum.unit.hours')),
+        this._box(parts.minutes, app.translator.trans('linkrobins-countdown-widget.forum.unit.minutes')),
+        this._box(parts.seconds, app.translator.trans('linkrobins-countdown-widget.forum.unit.seconds')),
+      ]);
+
+      if (linkUrl) {
+        return m('a', { className: 'LinkRobinsCountdown-boxesLink', href: linkUrl, rel: 'noopener' }, boxes);
+      }
+      return boxes;
+    }
+
+    _box(value: number, label: Mithril.Children) {
+      // Days isn't padded if 3+ digits (e.g. a 1-year countdown shows "365").
+      const display = value >= 100 ? String(value) : twoDigits(value);
+      return m('div', { className: 'LinkRobinsCountdown-box' }, [
+        m('div', { className: 'LinkRobinsCountdown-box-value' }, display),
+        m('div', { className: 'LinkRobinsCountdown-box-label' }, label),
+      ]);
+    }
+  };
+}
